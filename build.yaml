@@ -2,7 +2,7 @@
 name: "OpenLibrary"
 guid: "a4df60c5-6ab4-412a-8f79-2cab93fb2bc5"
 version: 1
-targetAbi: "10.12.0.0"
+targetAbi: "12.0.0.0"
 framework: "net9.0"
 overview: "OpenLibrary metadata provider for Jellyfin"
 description: >
