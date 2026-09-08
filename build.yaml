@@ -9,7 +9,7 @@ description: >
   Provides book and author metadata from OpenLibrary.org for your Jellyfin book libraries.
   Automatically fetches book descriptions, series information, publication dates, genres,
   and author biographies from the OpenLibrary API.
-category: "Metadata"
+category: "Books"
 owner: "jellyfin"
 artifacts:
 - "Jellyfin.Plugin.OpenLibrary.dll"
