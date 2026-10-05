@@ -30,7 +30,7 @@ internal sealed class ClientSideRateLimitedHandler : DelegatingHandler
     /// Initializes a new instance of the <see cref="ClientSideRateLimitedHandler"/> class.
     /// </summary>
     /// <param name="logger">Instance of the <see cref="ILogger{ClientSideRateLimitedHandler}"/> interface.</param>
-    internal ClientSideRateLimitedHandler(ILogger<ClientSideRateLimitedHandler> logger)
+    public ClientSideRateLimitedHandler(ILogger<ClientSideRateLimitedHandler> logger)
         : base(new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.All,
