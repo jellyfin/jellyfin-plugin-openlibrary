@@ -1,21 +1,16 @@
 ---
 name: "OpenLibrary"
 guid: "a4df60c5-6ab4-412a-8f79-2cab93fb2bc5"
-version: 1
-targetAbi: "12.0.0.0"
+version: 2
+targetAbi: "12.2.0.0"
 framework: "net10.0"
 overview: "OpenLibrary metadata provider for Jellyfin"
 description: >
-  Provides book and author metadata from OpenLibrary.org for your Jellyfin book libraries.
-  Automatically fetches book descriptions, series information, publication dates, genres,
-  and author biographies from the OpenLibrary API.
+  Provides book and author metadata from OpenLibrary.org for your Jellyfin book libraries. Automatically fetches book descriptions, series information, publication dates, genres, and author biographies from the OpenLibrary API.
+
 category: "Books"
 owner: "jellyfin"
 artifacts:
-- "Jellyfin.Plugin.OpenLibrary.dll"
-changelog: >
-  Initial release
-  - Book metadata provider
-  - Author/person metadata provider
-  - Support for book descriptions, series, genres, and publication dates
-  - Support for author biographies and birth/death dates
+  - "Jellyfin.Plugin.OpenLibrary.dll"
+changelog: |-
+  - Fix: Set ClientSideRateLimitedHandler to public (#9) @jordanmichaelrushing, @crobibero
