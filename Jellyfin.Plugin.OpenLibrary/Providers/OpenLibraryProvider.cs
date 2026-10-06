@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
@@ -19,6 +20,11 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
     /// </summary>
     public class OpenLibraryProvider : IRemoteMetadataProvider<Book, BookInfo>
     {
+        private const string ProviderKey = "OpenLibrary";
+        private const string SearchFields = "key,title,author_name,author_key,cover_i,cover_edition_key,first_publish_year,series_name,ratings_average";
+        private const int IdentifyResultLimit = 10;
+        private const int MetadataResultLimit = 3;
+
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<OpenLibraryProvider> _logger;
 
@@ -39,10 +45,46 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
         public string Name => "OpenLibrary";
 
         /// <inheritdoc />
-        public Task<IEnumerable<RemoteSearchResult>> GetSearchResults(BookInfo searchInfo, CancellationToken cancellationToken)
+        public async Task<IEnumerable<RemoteSearchResult>> GetSearchResults(BookInfo searchInfo, CancellationToken cancellationToken)
         {
             _logger.LogInformation("OpenLibrary search for: {Title}", searchInfo.Name);
-            return Task.FromResult(Enumerable.Empty<RemoteSearchResult>());
+
+            var remoteResults = new List<RemoteSearchResult>();
+
+            try
+            {
+                var searchResults = await FindWorks(searchInfo, IdentifyResultLimit, cancellationToken).ConfigureAwait(false);
+
+                foreach (var searchResult in searchResults)
+                {
+                    var remoteResult = new RemoteSearchResult
+                    {
+                        Name = searchResult.Title,
+                        SearchProviderName = Name,
+                        ProductionYear = searchResult.FirstPublishYear
+                    };
+
+                    remoteResult.SetProviderId(ProviderKey, GetWorkId(searchResult.Key));
+
+                    if (searchResult.AuthorNames.Count > 0)
+                    {
+                        remoteResult.Overview = string.Join(", ", searchResult.AuthorNames);
+                    }
+
+                    if (searchResult.CoverId.HasValue)
+                    {
+                        remoteResult.ImageUrl = $"https://covers.openlibrary.org/b/id/{searchResult.CoverId.Value}-M.jpg";
+                    }
+
+                    remoteResults.Add(remoteResult);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error searching OpenLibrary for {Title}", searchInfo.Name);
+            }
+
+            return remoteResults;
         }
 
         /// <inheritdoc />
@@ -50,15 +92,15 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
         {
             var result = new MetadataResult<Book>();
 
-            if (string.IsNullOrWhiteSpace(info.Name))
+            if (string.IsNullOrWhiteSpace(info.Name) && string.IsNullOrEmpty(info.GetProviderId(ProviderKey)))
             {
                 return result;
             }
 
             try
             {
-                // Step 1: Search for the book
-                var searchResults = await SearchOpenLibrary(info.Name, cancellationToken).ConfigureAwait(false);
+                // Step 1: Look up the identified work or search for the book
+                var searchResults = await FindWorks(info, MetadataResultLimit, cancellationToken).ConfigureAwait(false);
                 if (searchResults.Count == 0)
                 {
                     return result;
@@ -66,9 +108,11 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
 
                 // Step 2: Get detailed information for the first result
                 var firstResult = searchResults.First();
-                var bookMetadata = await GetBookDetails(firstResult, info.Name, cancellationToken).ConfigureAwait(false);
+                var title = string.IsNullOrWhiteSpace(info.Name) ? firstResult.Title : info.Name;
+                var bookMetadata = await GetBookDetails(firstResult, title, cancellationToken).ConfigureAwait(false);
                 if (bookMetadata != null)
                 {
+                    bookMetadata.Item.SetProviderId(ProviderKey, GetWorkId(firstResult.Key));
                     result.Item = bookMetadata.Item;
                     result.HasMetadata = true;
                     result.People = bookMetadata.People;
@@ -85,12 +129,35 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
         /// <inheritdoc />
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            throw new NotImplementedException("OpenLibrary provider does not support image retrieval");
+            var httpClient = _httpClientFactory.CreateClient(PluginServiceRegistrator.OpenLibraryHttpClientName);
+            return httpClient.GetAsync(new Uri(url), cancellationToken);
         }
 
-        private async Task<List<OpenLibrarySearchResult>> SearchOpenLibrary(string title, CancellationToken cancellationToken)
+        private static string GetWorkId(string workKey)
         {
-            var searchUrl = $"https://openlibrary.org/search.json?title={HttpUtility.UrlEncode(title)}&limit=5";
+            return workKey.Replace("/works/", string.Empty, StringComparison.Ordinal);
+        }
+
+        private Task<List<OpenLibrarySearchResult>> FindWorks(BookInfo info, int limit, CancellationToken cancellationToken)
+        {
+            // A work chosen through `Identify` is prioritized over the title
+            var workId = info.GetProviderId(ProviderKey);
+            if (!string.IsNullOrEmpty(workId))
+            {
+                return SearchOpenLibrary($"q={HttpUtility.UrlEncode("key:/works/" + workId)}", workId, 1, cancellationToken);
+            }
+
+            if (string.IsNullOrWhiteSpace(info.Name))
+            {
+                return Task.FromResult(new List<OpenLibrarySearchResult>());
+            }
+
+            return SearchOpenLibrary($"title={HttpUtility.UrlEncode(info.Name)}", info.Name, limit, cancellationToken);
+        }
+
+        private async Task<List<OpenLibrarySearchResult>> SearchOpenLibrary(string query, string title, int limit, CancellationToken cancellationToken)
+        {
+            var searchUrl = $"https://openlibrary.org/search.json?{query}&limit={limit}&fields={SearchFields}";
 
             using var httpClient = _httpClientFactory.CreateClient(PluginServiceRegistrator.OpenLibraryHttpClientName);
 
@@ -126,6 +193,12 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
 
             var book = await TryGetBookFromUrl(worksUrl, originalTitle, searchResult.Key, cancellationToken).ConfigureAwait(false);
 
+            // The search result carries the proper series name
+            if (book != null && !string.IsNullOrEmpty(searchResult.SeriesName))
+            {
+                book.SeriesName = searchResult.SeriesName;
+            }
+
             // If works didn't have series info and we have a cover edition, try that
             if (book != null && string.IsNullOrEmpty(book.SeriesName) && !string.IsNullOrEmpty(searchResult.CoverEdition))
             {
@@ -149,6 +222,17 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
             if (book == null)
             {
                 return null;
+            }
+
+            if (!book.ProductionYear.HasValue && searchResult.FirstPublishYear.HasValue)
+            {
+                book.ProductionYear = searchResult.FirstPublishYear;
+            }
+
+            if (searchResult.RatingsAverage.HasValue)
+            {
+                // OpenLibrary rates out of 5, Jellyfin out of 10
+                book.CommunityRating = (float)Math.Round(searchResult.RatingsAverage.Value * 2, 1);
             }
 
             // Fetch author bios if we have author keys
@@ -251,18 +335,48 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
                                     }
                                 }
 
+                                var authorNames = new List<string>();
+                                if (doc.TryGetProperty("author_name", out var authorNameElement))
+                                {
+                                    authorNames = ExtractStringArray(authorNameElement);
+                                }
+
+                                int? coverId = null;
+                                if (doc.TryGetProperty("cover_i", out var coverIdElement) && coverIdElement.TryGetInt32(out var coverIdValue))
+                                {
+                                    coverId = coverIdValue;
+                                }
+
+                                int? firstPublishYear = null;
+                                if (doc.TryGetProperty("first_publish_year", out var yearElement) && yearElement.TryGetInt32(out var yearValue))
+                                {
+                                    firstPublishYear = yearValue;
+                                }
+
+                                string? seriesName = null;
+                                if (doc.TryGetProperty("series_name", out var seriesNameElement))
+                                {
+                                    seriesName = ExtractStringValue(seriesNameElement);
+                                }
+
+                                double? ratingsAverage = null;
+                                if (doc.TryGetProperty("ratings_average", out var ratingElement) && ratingElement.TryGetDouble(out var ratingValue))
+                                {
+                                    ratingsAverage = ratingValue;
+                                }
+
                                 results.Add(new OpenLibrarySearchResult
                                 {
                                     Key = key,
                                     Title = title,
                                     CoverEdition = coverEdition,
-                                    AuthorKeys = authorKeys
+                                    AuthorKeys = authorKeys,
+                                    AuthorNames = authorNames,
+                                    CoverId = coverId,
+                                    FirstPublishYear = firstPublishYear,
+                                    SeriesName = seriesName,
+                                    RatingsAverage = ratingsAverage
                                 });
-
-                                if (results.Count >= 3) // Limit to first 3 results
-                                {
-                                    break;
-                                }
                             }
                         }
                     }
@@ -305,6 +419,17 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
                     if (!string.IsNullOrEmpty(series))
                     {
                         book.SeriesName = series;
+                    }
+
+                    // Works list series as objects holding a series key and the position of the book in it
+                    if (seriesElement.ValueKind == JsonValueKind.Array
+                        && seriesElement.GetArrayLength() > 0
+                        && seriesElement[0].ValueKind == JsonValueKind.Object
+                        && seriesElement[0].TryGetProperty("position", out var positionElement)
+                        && positionElement.ValueKind == JsonValueKind.String
+                        && int.TryParse(positionElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var position))
+                    {
+                        book.IndexNumber = position;
                     }
                 }
 
@@ -361,7 +486,7 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
         {
             if (element.ValueKind == JsonValueKind.Array && element.GetArrayLength() > 0)
             {
-                return element[0].GetString();
+                return element[0].ValueKind == JsonValueKind.String ? element[0].GetString() : null;
             }
             else if (element.ValueKind == JsonValueKind.String)
             {
@@ -379,7 +504,7 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
             {
                 foreach (var item in element.EnumerateArray())
                 {
-                    var value = item.GetString();
+                    var value = item.ValueKind == JsonValueKind.String ? item.GetString() : null;
                     if (!string.IsNullOrEmpty(value))
                     {
                         result.Add(value);
@@ -485,6 +610,16 @@ namespace Jellyfin.Plugin.OpenLibrary.Providers
             public string CoverEdition { get; set; } = string.Empty;
 
             public List<string> AuthorKeys { get; set; } = new List<string>();
+
+            public List<string> AuthorNames { get; set; } = new List<string>();
+
+            public int? CoverId { get; set; }
+
+            public int? FirstPublishYear { get; set; }
+
+            public string? SeriesName { get; set; }
+
+            public double? RatingsAverage { get; set; }
         }
     }
 }
