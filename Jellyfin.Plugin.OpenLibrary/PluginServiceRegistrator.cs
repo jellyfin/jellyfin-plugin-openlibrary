@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http.Headers;
 using Jellyfin.Plugin.OpenLibrary.Providers;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
@@ -25,7 +26,12 @@ namespace Jellyfin.Plugin.OpenLibrary
             serviceCollection.AddTransient<ClientSideRateLimitedHandler>();
 
             // Register a named HTTP client with rate limiting for OpenLibrary API
-            serviceCollection.AddHttpClient(OpenLibraryHttpClientName)
+            serviceCollection.AddHttpClient(OpenLibraryHttpClientName, client =>
+                {
+                    // OpenLibrary asks API clients to identify themselves in the User-Agent
+                    client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Jellyfin-OpenLibrary-Plugin", typeof(PluginServiceRegistrator).Assembly.GetName().Version?.ToString()));
+                    client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("(+https://github.com/jellyfin/jellyfin-plugin-openlibrary)"));
+                })
                 .ConfigurePrimaryHttpMessageHandler<ClientSideRateLimitedHandler>()
                 .SetHandlerLifetime(TimeSpan.FromMinutes(5));
 
