@@ -18,12 +18,15 @@ internal sealed class ClientSideRateLimitedHandler : DelegatingHandler
 {
     private readonly ILogger<ClientSideRateLimitedHandler> _logger;
 
+    // OpenLibrary allows 1 request per second for clients without a contact address in their
+    // User-Agent and blocks clients that exceed it: https://openlibrary.org/developers/api
+    // The queue is capped so a queued request is still sent within HttpClient's 100 second timeout.
     private static readonly RateLimiter _rateLimiter = new FixedWindowRateLimiter(new FixedWindowRateLimiterOptions
     {
-        PermitLimit = 10,
+        PermitLimit = 1,
         Window = TimeSpan.FromSeconds(1),
         QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-        QueueLimit = 20
+        QueueLimit = 60
     });
 
     /// <summary>
